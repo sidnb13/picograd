@@ -1,1 +1,4 @@
-.DS_Storen.vscode/
+.DS_Store/
+vscode/
+picograd.egg-info/
+**/*/__pycache__/
