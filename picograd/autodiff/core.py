@@ -1,6 +1,8 @@
 '''Core autodiff functionality of datatypes (variables, tensors) and computational graphs.'''
 
 from collections import defaultdict
+import networkx as nx
+import matplotlib.pyplot as plt
 from functools import wraps
 from typing import Callable
 from types import FunctionType, BuiltinFunctionType
@@ -10,14 +12,19 @@ import numpy as _np
 class Variable:
     def __init__(self, value, leaf=False, requires_grad=True, parent_nodes=[], fn=None) -> None:
         '''
-        Initialize a Variable, representing a Variable in the computational graph.
+        Initialize a Variable superclass, representing a Variable in the computational graph.
         '''
-        self.value = value
+
+        # Unwrap if needed, we should be dealing with np arrays or primitives
+        self.value = value.value if isinstance(value, Variable) else value
         self.leaf = leaf
         self.fn = fn
         self.requires_grad = requires_grad
         self.parent_nodes = parent_nodes
         self.grad = None
+
+    def _grad(self):
+        raise NotImplementedError('grad not implemented for this Variable')
 
     def toposort(self):
         def get_node_counts(end_node: Variable):
@@ -31,7 +38,7 @@ class Variable:
                 # how many times does this Variable appear as a parent Variable
                 counts[node] += 1
             return counts
-        
+
         counts = get_node_counts(self)
         stack = [self]
         while stack:
@@ -42,7 +49,7 @@ class Variable:
                 counts[p] -= 1
                 # if all children have been visited, add to stack
                 if counts[p] == 0:
-                    stack.append(p)        
+                    stack.append(p)
 
     def backward(self):
         '''Compute and update the gradient of this variable with respect to all other variables.'''
@@ -50,11 +57,34 @@ class Variable:
         if not leaf and not self.requires_grad:
             raise Exception(f'{self} does not track grad')
 
-        # perform backpropagation on nodes
-        
+        # TODO perform backpropagation on nodes and implement the jvp and vjp functions for numpy ops
+        for node in self.toposort():
+            node._grad()
+            node.backward()
 
     def __repr__(self) -> str:
         return f'Variable({self.value}, leaf={self.leaf}, requires_grad={self.requires_grad})'
+
+
+class DAGVisualization:
+    def __init__(self, end_node: Variable) -> None:
+        self.end_node = end_node
+        self.graph = nx.DiGraph()
+
+    def add_node(self, node: Variable):
+        self.graph.add_node(f'Variable({node.value})')
+
+    def add_edge(self, parent: Variable, child: Variable):
+        self.graph.add_edge(
+            f'Variable({parent.value})', f'Variable({child.value})')
+
+    def create_nx_graph(self):
+        def construct_graph(start_node: Variable):
+            for parent in start_node.parent_nodes:
+                self.add_edge(parent, start_node)
+                construct_graph(parent)
+        construct_graph(self.end_node)
+        print(self.graph.nodes)
 
 
 def wrap_namespace(nns, ons):
@@ -112,50 +142,69 @@ def primitive(fn, usegrad=True):
             list(args) + list(kwargs.values())) if isinstance(x, Variable)]
 
         value = fn(*argvals, **kwargvals)
+        print(fn)
         return Variable(value, leaf=False, requires_grad=usegrad, parent_nodes=parents, fn=fn)
 
     return inner
 
 
 # wrap numpy namespace
-anp = globals()
-wrap_namespace(anp, _np.__dict__)
+numpy_wrapper = globals()
+wrap_namespace(numpy_wrapper, _np.__dict__)
 
 setattr(Variable, 'ndim', property(lambda self: self.value.ndim))
 setattr(Variable, 'size', property(lambda self: self.value.size))
 setattr(Variable, 'dtype', property(lambda self: self.value.dtype))
-setattr(Variable, 'T', property(lambda self: anp['transpose'](self)))
+setattr(Variable, 'T', property(lambda self: numpy_wrapper['transpose'](self)))
 setattr(Variable, 'shape', property(lambda self: self.value.shape))
 
 setattr(Variable, '__len__', lambda self, other: len(self._value))
 setattr(Variable, 'astype', lambda self, *args, **
-        kwargs: anp['_astype'](self, *args, **kwargs))
-setattr(Variable, '__neg__', lambda self: anp['negative'](self))
-setattr(Variable, '__add__', lambda self, other: anp['add'](self, other))
-setattr(Variable, '__sub__', lambda self, other: anp['subtract'](self, other))
-setattr(Variable, '__mul__', lambda self, other: anp['multiply'](self, other))
-setattr(Variable, '__pow__', lambda self, other: anp['power'](self, other))
-setattr(Variable, '__div__', lambda self, other: anp['divide'](self, other))
-setattr(Variable, '__mod__', lambda self, other: anp['mod'](self, other))
+        kwargs: numpy_wrapper['_astype'](self, *args, **kwargs))
+setattr(Variable, '__neg__', lambda self: numpy_wrapper['negative'](self))
+setattr(Variable, '__add__', lambda self,
+        other: numpy_wrapper['add'](self, other))
+setattr(Variable, '__sub__', lambda self,
+        other: numpy_wrapper['subtract'](self, other))
+setattr(Variable, '__mul__', lambda self,
+        other: numpy_wrapper['multiply'](self, other))
+setattr(Variable, '__pow__', lambda self,
+        other: numpy_wrapper['power'](self, other))
+setattr(Variable, '__div__', lambda self,
+        other: numpy_wrapper['divide'](self, other))
+setattr(Variable, '__mod__', lambda self,
+        other: numpy_wrapper['mod'](self, other))
 setattr(Variable, '__truediv__', lambda self,
-        other: anp['true_divide'](self, other))
-setattr(Variable, '__matmul__', lambda self, other: anp['matmul'](self, other))
-setattr(Variable, '__radd__', lambda self, other: anp['add'](other, self))
-setattr(Variable, '__rsub__', lambda self, other: anp['subtract'](other, self))
-setattr(Variable, '__rmul__', lambda self, other: anp['multiply'](other, self))
-setattr(Variable, '__rpow__', lambda self, other: anp['power'](other, self))
-setattr(Variable, '__rdiv__', lambda self, other: anp['divide'](other, self))
-setattr(Variable, '__rmod__', lambda self, other: anp['mod'](other, self))
+        other: numpy_wrapper['true_divide'](self, other))
+setattr(Variable, '__matmul__', lambda self,
+        other: numpy_wrapper['matmul'](self, other))
+setattr(Variable, '__radd__', lambda self,
+        other: numpy_wrapper['add'](other, self))
+setattr(Variable, '__rsub__', lambda self,
+        other: numpy_wrapper['subtract'](other, self))
+setattr(Variable, '__rmul__', lambda self,
+        other: numpy_wrapper['multiply'](other, self))
+setattr(Variable, '__rpow__', lambda self,
+        other: numpy_wrapper['power'](other, self))
+setattr(Variable, '__rdiv__', lambda self,
+        other: numpy_wrapper['divide'](other, self))
+setattr(Variable, '__rmod__', lambda self,
+        other: numpy_wrapper['mod'](other, self))
 setattr(Variable, '__rtruediv__', lambda self,
-        other: anp['true_divide'](other, self))
+        other: numpy_wrapper['true_divide'](other, self))
 setattr(Variable, '__rmatmul__', lambda self,
-        other: anp['matmul'](other, self))
-setattr(Variable, '__eq__', lambda self, other: anp['equal'](self, other))
-setattr(Variable, '__ne__', lambda self, other: anp['not_equal'](self, other))
-setattr(Variable, '__gt__', lambda self, other: anp['greater'](self, other))
+        other: numpy_wrapper['matmul'](other, self))
+setattr(Variable, '__eq__', lambda self,
+        other: numpy_wrapper['equal'](self, other))
+setattr(Variable, '__ne__', lambda self,
+        other: numpy_wrapper['not_equal'](self, other))
+setattr(Variable, '__gt__', lambda self,
+        other: numpy_wrapper['greater'](self, other))
 setattr(Variable, '__ge__', lambda self,
-        other: anp['greater_equal'](self, other))
-setattr(Variable, '__lt__', lambda self, other: anp['less'](self, other))
-setattr(Variable, '__le__', lambda self, other: anp['less_equal'](self, other))
-setattr(Variable, '__abs__', lambda self: anp['abs'](self))
+        other: numpy_wrapper['greater_equal'](self, other))
+setattr(Variable, '__lt__', lambda self,
+        other: numpy_wrapper['less'](self, other))
+setattr(Variable, '__le__', lambda self,
+        other: numpy_wrapper['less_equal'](self, other))
+setattr(Variable, '__abs__', lambda self: numpy_wrapper['abs'](self))
 setattr(Variable, '__hash__', lambda self: id(self))
